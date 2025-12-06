@@ -3,6 +3,8 @@ EcoSteps - Sustainable Transportation Tracker
 🎯 Project Vision
 EcoSteps is a gamified sustainability application that encourages users to make eco-friendly transportation choices by tracking CO2 emissions, rewarding green travel, and providing real-time environmental data.
 
+The the frontend was built using Lovaable
+To try echo steps use our deployed site here "https://ecoosteps.lovable.app/"
 🏗️ Architecture Overview
 The application consists of a Python FastAPI backend that integrates multiple external services and manages a local SQLite database for data persistence.
 Core Components
@@ -39,3 +41,4 @@ How it works:
 Gemini estimates the CO2 emission calculation based on the transportation mode and the distance from the starting to the final destination
 
 Gemini AI processes the calculation with structured JSON output
+
