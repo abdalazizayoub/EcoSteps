@@ -145,3 +145,25 @@ async def log_trip(trip_data: TripData):
     finally:
         if conn:
             conn.close()
+            
+@app.get(f"/user/{1}/xp")
+async def get_user_xp(user_id: int):
+    try:
+        conn = sqlite3.connect('ecosteps.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT total_XP FROM users WHERE id = ?', (user_id,))
+        result = cursor.fetchone()
+        
+        if result:
+            total_xp = result[0]
+            return {"user_id": user_id, "total_XP": total_xp}
+        else:
+            return {"status": "error", "message": "User not found"}
+        
+    except Exception as e:
+        print(f"ERROR during get_user_xp: {e}") 
+        return {'status': 'error', 'message': f'Failed to retrieve user XP: {e}'}
+    finally:
+        if conn:
+            conn.close()
