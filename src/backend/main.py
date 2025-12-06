@@ -6,6 +6,18 @@ from database_setup import create_tables
 from fetch_distance import fetch_distance, calculate_ranked_rewards
 from llm_client import co2_emissions
 
+from pydantic import BaseModel
+from datetime import datetime
+
+class TripData(BaseModel):
+    date: datetime
+    origin: str
+    destination: str
+    distance_meters: float
+    transport_mode: str
+    co2_emissions_kg: float
+    xp_gained: int
+
 
 app = FastAPI()
 
@@ -17,7 +29,6 @@ async def startup_db_init():
     It ensures the database file and all necessary tables exist.
     """
     print("🚀 Running database startup routine...")
-    # This will create 'ecosteps.db' and all tables if they don't exist.
     create_tables()
     print("✅ Database connection and table setup confirmed.")
 
@@ -88,4 +99,49 @@ async def get_all_routes(origin: str, destination: str):
         print(f"ERROR during get_all_routes: {e}")
         return {'status': 'error', 'message': f'Failed to get routes: {e}'}
     
+
+
+@app.post("/log_trip")
+async def log_trip(trip_data: TripData):
     
+    conn = None
+    try:
+        conn = sqlite3.connect('ecosteps.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO trips (user_id, date, point_A, point_B, distance, transport_mode, co2_emissions, XP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            1,  # Assuming user_id=1 for simplicity; replace with trip_data.user_id if available,
+            str(trip_data.date), 
+            trip_data.origin, 
+            trip_data.destination, 
+            trip_data.distance_meters / 1000.0, # Convert meters to kilometers for storage if that's what your schema intended
+            trip_data.transport_mode,
+            trip_data.co2_emissions_kg,
+            trip_data.xp_gained
+        ))
+
+        # 3. Update the user's total XP in the 'users' table
+        cursor.execute('''
+            UPDATE users
+            SET total_XP = total_XP + ?
+            WHERE id = 1
+        ''', (trip_data.xp_gained, 1))
+        
+        conn.commit()
+        
+        return {
+            "status": "Trip logged and XP updated successfully",
+            "XP_gained": trip_data.xp_gained
+        }
+
+    except sqlite3.IntegrityError as e:
+        return {'status': 'error', 'message': f'Database integrity error (user_id check?): {e}'}
+    except Exception as e:
+        print(f"ERROR during log_trip: {e}") 
+        return {'status': 'error', 'message': f'Failed to log trip: {e}'}
+    finally:
+        if conn:
+            conn.close()
