@@ -1,77 +1,101 @@
 import openmeteo_requests
-
 import pandas as pd
 import requests_cache
 from retry_requests import retry
+import numpy as np
 
 # Setup the Open-Meteo API client with cache and retry on error
-cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
-retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
-openmeteo = openmeteo_requests.Client(session = retry_session)
+cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
+retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+openmeteo = openmeteo_requests.Client(session=retry_session)
 
-# Make sure all required weather variables are listed here
-# The order of variables in hourly or daily is important to assign them correctly below
-url = "https://api.open-meteo.com/v1/forecast"
-params = {
-	"latitude": 48.3064,
-	"longitude": 14.2861,
-	"daily": ["temperature_2m_max", "temperature_2m_min"],
-	"hourly": ["temperature_2m", "relative_humidity_2m", "precipitation_probability", "precipitation", "rain", "showers", "snowfall", "visibility"],
-	"timezone": "Europe/Berlin",
-}
-responses = openmeteo.weather_api(url, params=params)
+def get_latest_weather_data():
+    """
+    Fetches the latest hourly weather and air quality data for a specific location,
+    processes it into DataFrames, and returns the latest available entry.
+    """
+    LATITUDE = 48.3064
+    LONGITUDE = 14.2861
+    TIMEZONE = "Europe/Berlin"
+    current = pd.Timestamp.utcnow().floor('H') # Floor to the hour for matching
 
-# Process first location. Add a for-loop for multiple locations or weather models
-response = responses[0]
-print(f"Coordinates: {response.Latitude()}°N {response.Longitude()}°E")
-print(f"Elevation: {response.Elevation()} m asl")
-print(f"Timezone: {response.Timezone()}{response.TimezoneAbbreviation()}")
-print(f"Timezone difference to GMT+0: {response.UtcOffsetSeconds()}s")
+    # --- 1. Fetch Air Quality (AQI) Data ---
+    aq_url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    aq_params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        "hourly": ["european_aqi"],
+        "timezone": TIMEZONE,
+    }
+    aq_responses = openmeteo.weather_api(aq_url, params=aq_params)
+    aq_response = aq_responses[0]
+    
+    hourly_aq = aq_response.Hourly()
+    hourly_european_aqi = hourly_aq.Variables(0).ValuesAsNumpy()
+    
+    aq_timestamps = pd.date_range(
+        start = pd.to_datetime(hourly_aq.Time(), unit="s", utc=True),
+        end = pd.to_datetime(hourly_aq.TimeEnd(), unit="s", utc=True),
+        freq = pd.Timedelta(seconds=hourly_aq.Interval()),
+        inclusive = "left"
+    ).tz_convert('UTC').floor('H') # Ensure UTC and hourly frequency for consistent merging
 
-# Process hourly data. The order of variables needs to be the same as requested.
-hourly = response.Hourly()
-hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
-hourly_relative_humidity_2m = hourly.Variables(1).ValuesAsNumpy()
-hourly_precipitation_probability = hourly.Variables(2).ValuesAsNumpy()
-hourly_precipitation = hourly.Variables(3).ValuesAsNumpy()
-hourly_rain = hourly.Variables(4).ValuesAsNumpy()
-hourly_showers = hourly.Variables(5).ValuesAsNumpy()
-hourly_snowfall = hourly.Variables(6).ValuesAsNumpy()
-hourly_visibility = hourly.Variables(7).ValuesAsNumpy()
+    aq_dataframe = pd.DataFrame({"date": aq_timestamps, "european_aqi": hourly_european_aqi})
+    
+    # --- 2. Fetch Detailed Weather Data (From your original script) ---
+    weather_url = "https://api.open-meteo.com/v1/forecast"
+    weather_params = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
+        # Only include variables needed for hourly insert (daily is omitted for simplicity)
+        "hourly": ["temperature_2m", "relative_humidity_2m", "precipitation_probability", "precipitation"],
+        "timezone": TIMEZONE,
+    }
+    weather_responses = openmeteo.weather_api(weather_url, params=weather_params)
+    weather_response = weather_responses[0]
 
-hourly_data = {"date": pd.date_range(
-	start = pd.to_datetime(hourly.Time(), unit = "s", utc = True),
-	end =  pd.to_datetime(hourly.TimeEnd(), unit = "s", utc = True),
-	freq = pd.Timedelta(seconds = hourly.Interval()),
-	inclusive = "left"
-)}
+    hourly_w = weather_response.Hourly()
+    # Note: Variable indices must match the requested hourly list above
+    hourly_temperature_2m = hourly_w.Variables(0).ValuesAsNumpy()
+    hourly_relative_humidity_2m = hourly_w.Variables(1).ValuesAsNumpy()
+    hourly_precipitation_probability = hourly_w.Variables(2).ValuesAsNumpy()
+    hourly_precipitation = hourly_w.Variables(3).ValuesAsNumpy()
 
-hourly_data["temperature_2m"] = hourly_temperature_2m
-hourly_data["relative_humidity_2m"] = hourly_relative_humidity_2m
-hourly_data["precipitation_probability"] = hourly_precipitation_probability
-hourly_data["precipitation"] = hourly_precipitation
+    w_timestamps = pd.date_range(
+        start = pd.to_datetime(hourly_w.Time(), unit="s", utc=True),
+        end = pd.to_datetime(hourly_w.TimeEnd(), unit="s", utc=True),
+        freq = pd.Timedelta(seconds=hourly_w.Interval()),
+        inclusive = "left"
+    ).tz_convert('UTC').floor('H') # Ensure UTC and hourly frequency
 
-hourly_dataframe = pd.DataFrame(data = hourly_data)
-print("\nHourly data\n", hourly_dataframe)
+    w_dataframe = pd.DataFrame({
+        "date": w_timestamps,
+        "temperature_2m": hourly_temperature_2m,
+        "relative_humidity_2m": hourly_relative_humidity_2m,
+        "precipitation_probability": hourly_precipitation_probability,
+        "precipitation": hourly_precipitation
+    })
+    
+    # --- 3. Merge and Extract Latest Data ---
+    
+    # Merge weather and AQI dataframes on the date column
+    # Use outer merge just in case timestamps don't perfectly align (though they usually do)
+    merged_df = pd.merge(w_dataframe, aq_dataframe, on='date', how='outer')
 
-# Process daily data. The order of variables needs to be the same as requested.
-daily = response.Daily()
-daily_temperature_2m_max = daily.Variables(0).ValuesAsNumpy()
-daily_temperature_2m_min = daily.Variables(1).ValuesAsNumpy()
+    # Filter for the latest completed hourly entry
+    past_hours = merged_df[merged_df["date"] <= current].dropna(subset=['temperature_2m', 'european_aqi'])
+    
+    if past_hours.empty:
+        raise Exception("No current or past hourly data available.")
 
-daily_data = {"date": pd.date_range(
-	start = pd.to_datetime(daily.Time(), unit = "s", utc = True),
-	end =  pd.to_datetime(daily.TimeEnd(), unit = "s", utc = True),
-	freq = pd.Timedelta(seconds = daily.Interval()),
-	inclusive = "left"
-)}
-
-daily_data["temperature_2m_max"] = daily_temperature_2m_max
-daily_data["temperature_2m_min"] = daily_temperature_2m_min
-
-daily_dataframe = pd.DataFrame(data = daily_data)
-current = pd.Timestamp.utcnow()
-past_hours = hourly_dataframe[hourly_dataframe["date"] < current]
-latest_entry = past_hours.iloc[-1]
-timestamp,temperature_2m,relative_humidity_2m,precipitation_probability,precipitation =  latest_entry["date"], latest_entry["temperature_2m"], latest_entry["relative_humidity_2m"], latest_entry["precipitation_probability"], latest_entry["precipitation"] ,daily_temperature_2m_max, daily_temperature_2m_min
-
+    latest_entry = past_hours.iloc[-1]
+    
+    # Return the dictionary expected by main.py
+    return {
+        "timestamp": latest_entry["date"].isoformat(),
+        "temperature_2m": float(latest_entry["temperature_2m"]),
+        "relative_humidity_2m": float(latest_entry["relative_humidity_2m"]),
+        "precipitation_probability": float(latest_entry["precipitation_probability"]),
+        "precipitation": float(latest_entry["precipitation"]),
+        "aqi": float(latest_entry["european_aqi"])
+    }
